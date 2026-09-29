@@ -19,6 +19,7 @@ to make the following true no matter how many workers race against it:
 from __future__ import annotations
 
 import json
+import random
 import sqlite3
 import time
 import uuid
@@ -39,13 +40,14 @@ CREATE TABLE IF NOT EXISTS tasks (
     name              TEXT NOT NULL,
     command           TEXT NOT NULL,                 -- JSON list, e.g. ["python3","step.py"]
     needs             TEXT NOT NULL DEFAULT '[]',     -- JSON list of task ids this depends on
-    status            TEXT NOT NULL DEFAULT 'pending',-- pending/ready/claimed/running/done/failed/blocked
+    status            TEXT NOT NULL DEFAULT 'pending',-- pending/ready/claimed/running/done/failed/blocked/dead
     epoch             INTEGER NOT NULL DEFAULT 0,
     worker_id         TEXT,
     lease_expires_at  REAL,
     idempotency_key   TEXT NOT NULL,
     attempts          INTEGER NOT NULL DEFAULT 0,
     max_retries       INTEGER NOT NULL DEFAULT 3,
+    not_before        REAL,                          -- ready tasks aren't claimable until this time (backoff)
     output            TEXT,
     error             TEXT,
     created_at        REAL NOT NULL,
@@ -54,10 +56,20 @@ CREATE TABLE IF NOT EXISTS tasks (
     UNIQUE(run_id, name)
 );
 
-CREATE INDEX IF NOT EXISTS idx_tasks_claimable ON tasks (status, created_at);
+CREATE INDEX IF NOT EXISTS idx_tasks_claimable ON tasks (status, not_before, created_at);
 CREATE INDEX IF NOT EXISTS idx_tasks_run ON tasks (run_id, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_expiry ON tasks (status, lease_expires_at);
 """
+
+
+def _backoff_delay(attempt: int, base: float = 1.0, cap: float = 60.0) -> float:
+    """Full-jitter exponential backoff: uniform(0, min(cap, base * 2**attempt)).
+    Jitter (not just exponential growth) is what actually prevents a
+    thundering-herd reclaim when many tasks fail around the same moment —
+    without it every task failing at t=0 would all become ready again at
+    the exact same t=base*2**attempt and re-collide on claim_next()."""
+    ceiling = min(cap, base * (2 ** attempt))
+    return random.uniform(0, ceiling)
 
 
 @dataclass(frozen=True)
@@ -152,12 +164,12 @@ class Store:
                    lease_expires_at=?, claimed_at=?
                WHERE id = (
                    SELECT id FROM tasks
-                   WHERE status='ready'
+                   WHERE status='ready' AND (not_before IS NULL OR not_before <= ?)
                    ORDER BY created_at ASC
                    LIMIT 1
                )
                RETURNING *""",
-            (worker_id, expires_at, now),
+            (worker_id, expires_at, now, now),
         ).fetchone()
         if row is None:
             return None
@@ -208,30 +220,53 @@ class Store:
                 self._maybe_finish_run(lease.run_id)
         return accepted
 
-    def fail(self, lease: TaskLease, error: str, retry_delay: float | None) -> bool:
-        """Fenced failure. ``retry_delay`` None means retries are exhausted
-        (or the caller decided not to retry) -> terminal 'failed', which
-        propagates 'blocked' to descendants. A delay requeues to 'ready'
-        (immediate re-attempt is fine here; a real backoff would gate on a
-        not-before timestamp the same way `lease_expires_at` gates claims)."""
+    def fail(
+        self,
+        lease: TaskLease,
+        error: str,
+        now: float | None = None,
+        backoff_base: float = 1.0,
+        backoff_cap: float = 60.0,
+    ) -> bool:
+        """Fenced failure. Increments `attempts`; if that reaches the task's
+        `max_retries`, transitions to terminal 'dead' (propagates 'blocked'
+        to descendants, same as the old terminal 'failed' did). Otherwise
+        requeues to 'ready' with `not_before` set via exponential backoff +
+        full jitter, so claim_next() won't hand it back out immediately.
+
+        The pre-check SELECT and the final UPDATE both filter on
+        `id=? AND epoch=?`, inside one BEGIN IMMEDIATE transaction (so no
+        other writer can interleave between them): a lease that's already
+        been reclaimed matches neither, so this is a no-op and returns
+        False, same fencing guarantee as complete()."""
+        now = now if now is not None else time.time()
         with self._tx():
-            if retry_delay is None:
+            row = self._conn.execute(
+                "SELECT attempts, max_retries FROM tasks WHERE id=? AND epoch=?",
+                (lease.task_id, lease.epoch),
+            ).fetchone()
+            if row is None:
+                return False
+            new_attempts = row["attempts"] + 1
+            if new_attempts >= row["max_retries"]:
                 cur = self._conn.execute(
-                    """UPDATE tasks SET status='failed', error=?, attempts=attempts+1,
-                           finished_at=?, worker_id=NULL, lease_expires_at=NULL
+                    """UPDATE tasks SET status='dead', error=?, attempts=?,
+                           not_before=NULL, finished_at=?,
+                           worker_id=NULL, lease_expires_at=NULL
                        WHERE id=? AND epoch=?""",
-                    (error, time.time(), lease.task_id, lease.epoch),
+                    (error, new_attempts, now, lease.task_id, lease.epoch),
                 )
                 accepted = cur.rowcount > 0
                 if accepted:
                     self._propagate_blocked(lease.run_id)
                     self._maybe_finish_run(lease.run_id)
             else:
+                delay = _backoff_delay(new_attempts, backoff_base, backoff_cap)
                 cur = self._conn.execute(
-                    """UPDATE tasks SET status='ready', error=?, attempts=attempts+1,
-                           worker_id=NULL, lease_expires_at=NULL
+                    """UPDATE tasks SET status='ready', error=?, attempts=?,
+                           not_before=?, worker_id=NULL, lease_expires_at=NULL
                        WHERE id=? AND epoch=?""",
-                    (error, lease.task_id, lease.epoch),
+                    (error, new_attempts, now + delay, lease.task_id, lease.epoch),
                 )
                 accepted = cur.rowcount > 0
         return accepted
@@ -275,7 +310,7 @@ class Store:
                         f"SELECT id, status FROM tasks WHERE id IN ({placeholders})", needs
                     ).fetchall()
                 }
-                if any(statuses.get(n) in ("failed", "blocked") for n in needs):
+                if any(statuses.get(n) in ("failed", "blocked", "dead") for n in needs):
                     self._conn.execute("UPDATE tasks SET status='blocked' WHERE id=?", (row["id"],))
                     changed = True
 
@@ -284,7 +319,7 @@ class Store:
         statuses = [r["status"] for r in rows]
         if any(s in ("pending", "ready", "claimed", "running") for s in statuses):
             return
-        final = "failed" if any(s in ("failed", "blocked") for s in statuses) else "succeeded"
+        final = "failed" if any(s in ("failed", "blocked", "dead") for s in statuses) else "succeeded"
         self._conn.execute(
             "UPDATE runs SET status=?, finished_at=? WHERE id=?",
             (final, time.time(), run_id),

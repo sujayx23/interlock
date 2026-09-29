@@ -94,7 +94,7 @@ class Worker:
         except subprocess.TimeoutExpired:
             stop_heartbeat.set()
             hb_thread.join()
-            self.store.fail(lease, "task timed out", retry_delay=None)
+            self.store.fail(lease, "task timed out")
             return
         stop_heartbeat.set()
         hb_thread.join()
@@ -110,16 +110,12 @@ class Worker:
             try:
                 output = json.loads(proc.stdout) if proc.stdout.strip() else None
             except json.JSONDecodeError as e:
-                self.store.fail(lease, f"task stdout was not valid JSON: {e}", retry_delay=None)
+                self.store.fail(lease, f"task stdout was not valid JSON: {e}")
                 return
             self.store.complete(lease, output)
         else:
-            task = self.store.get_task(lease.task_id)
-            attempts = task["attempts"] if task else 0
-            max_retries = task["max_retries"] if task else 0
             error = f"exit {proc.returncode}: {proc.stderr[-2000:]}"
-            retry_delay = 0.0 if attempts < max_retries else None
-            self.store.fail(lease, error, retry_delay)
+            self.store.fail(lease, error)
 
     def close(self) -> None:
         self.store.close()

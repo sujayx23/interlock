@@ -1,0 +1,24 @@
+[project]
+name = "interlock"
+version = "0.1.0"
+description = "Leaderless, crash-resumable DAG task execution on SQLite — every worker's write is fenced by the epoch it claimed with."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[project.scripts]
+interlock-worker = "interlock.worker:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["interlock*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

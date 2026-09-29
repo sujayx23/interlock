@@ -5,6 +5,16 @@ it's abandoned), this test has a second worker actively trying to steal the
 task every 50ms for the task's full duration — if heartbeats ever silently
 fail, this is the test that catches it as a hard assertion failure, not a
 background thread warning.
+
+Ownership of the task is established with a direct claim_next() call BEFORE
+the scavenger thread starts, not by racing worker.run_one_cycle() against the
+scavenger's own first claim attempt. Racing them was tried first and is
+wrong: claim_next() is correctly fair between any two workers racing for a
+genuinely `ready` task, so on some runs the scavenger itself would win that
+initial race legitimately (confirmed directly: ~1 in 20 trials) — at which
+point the test's premise (a task someone already owns and is heartbeating)
+never gets set up, and the run finishes near-instantly with nothing proven.
+That was a bug in this test, not in claim_next() or heartbeat().
 """
 
 from __future__ import annotations
@@ -31,7 +41,14 @@ def test_heartbeat_prevents_reclaim_of_a_still_alive_slow_task(tmp_path):
         "run1",
         [{"name": "slow", "command": [PYTHON, str(FIXTURES / "step_a.py"), str(task_duration)], "needs": []}],
     )
-    store.close()
+
+    worker = Worker(db_path, lease_ttl=lease_ttl, poll_interval=0.02)
+    # Claim deterministically, in this thread, before any scavenger exists —
+    # ownership must be established first for "steal an owned task" to mean
+    # anything.
+    lease = worker.store.claim_next(worker.worker_id, lease_ttl)
+    assert lease is not None
+    assert worker.store.mark_running(lease)
 
     steal_attempts = {"count": 0, "succeeded": []}
     stop = threading.Event()
@@ -43,10 +60,10 @@ def test_heartbeat_prevents_reclaim_of_a_still_alive_slow_task(tmp_path):
         try:
             while not stop.is_set():
                 scav_store.reclaim_expired_leases()
-                lease = scav_store.claim_next(scav_store.new_worker_id(), lease_ttl)
+                scav_lease = scav_store.claim_next(scav_store.new_worker_id(), lease_ttl)
                 steal_attempts["count"] += 1
-                if lease is not None:
-                    steal_attempts["succeeded"].append(lease)
+                if scav_lease is not None:
+                    steal_attempts["succeeded"].append(scav_lease)
                 time.sleep(0.05)
         finally:
             scav_store.close()
@@ -54,13 +71,13 @@ def test_heartbeat_prevents_reclaim_of_a_still_alive_slow_task(tmp_path):
     scav_thread = threading.Thread(target=scavenger, daemon=True)
     scav_thread.start()
 
-    worker = Worker(db_path, lease_ttl=lease_ttl, poll_interval=0.02)
     try:
-        worker.run_one_cycle()  # claims and runs the slow task to completion, heartbeating throughout
+        worker._execute(lease)  # runs the slow task to completion, heartbeating throughout
     finally:
         stop.set()
         scav_thread.join(timeout=5.0)
         worker.close()
+        store.close()
 
     assert steal_attempts["count"] > 5, "the scavenger should have gotten many chances to steal"
     assert steal_attempts["succeeded"] == [], (

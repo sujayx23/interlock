@@ -10,11 +10,20 @@ Ownership of the task is established with a direct claim_next() call BEFORE
 the scavenger thread starts, not by racing worker.run_one_cycle() against the
 scavenger's own first claim attempt. Racing them was tried first and is
 wrong: claim_next() is correctly fair between any two workers racing for a
-genuinely `ready` task, so on some runs the scavenger itself would win that
-initial race legitimately (confirmed directly: ~1 in 20 trials) — at which
-point the test's premise (a task someone already owns and is heartbeating)
-never gets set up, and the run finishes near-instantly with nothing proven.
-That was a bug in this test, not in claim_next() or heartbeat().
+genuinely `ready` task, so the scavenger can legitimately win that initial
+race — confirmed directly with an instrumented reproduction (not just
+inferred from the flake rate): the task's own subprocess never even started,
+`did_work` was False, and the scavenger's claim was a fresh one (epoch 0->1,
+zero leases reclaimed), not a wrongful reclaim of anything. When that
+happens the test's premise (a task someone already owns and is
+heartbeating) never gets set up, and the run finishes near-instantly with
+nothing proven. That was a bug in this test's setup, not in claim_next(),
+reclaim_expired_leases(), or heartbeat() — the underlying invariant those
+functions are supposed to uphold is covered deterministically, without any
+thread or real-time dependency, by
+test_claim_race.py::test_second_claim_never_returns_an_already_claimed_task_while_lease_is_valid.
+Do not try to make this specific race reproduce reliably via sleeps or
+thread-priority tricks; that invariant test is the real coverage.
 """
 
 from __future__ import annotations

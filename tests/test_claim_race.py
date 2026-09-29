@@ -113,3 +113,40 @@ def test_claim_bumps_epoch_and_no_two_claims_share_an_epoch_value(tmp_path):
     # The current owner's write, fenced on the CURRENT epoch, must succeed.
     assert store.complete(lease2, output="correct") is True
     store.close()
+
+
+def test_second_claim_never_returns_an_already_claimed_task_while_lease_is_valid(tmp_path):
+    """The actual invariant behind heartbeat's guarantee (see test_heartbeat.py),
+    isolated here without any thread or real-time dependency: once a task is
+    claimed and its lease has not expired, a concurrent claim_next() from a
+    different worker must never return it — whether because another ready
+    task exists for it to get instead, or because none does. Explicit claims
+    with an injected `now`, no sleep, no threads: this either holds every run
+    or it doesn't, nothing to get lucky or unlucky on.
+    """
+    store = Store(tmp_path / "ownership.db")
+    store.create_run(
+        "run1",
+        [
+            {"name": "a", "command": ["true"], "needs": []},
+            {"name": "b", "command": ["true"], "needs": []},
+        ],
+    )
+
+    lease1 = store.claim_next("worker1", lease_ttl=30.0, now=0.0)
+    assert lease1 is not None
+
+    # A second worker racing in immediately (lease1 has 30s left) must get
+    # the OTHER ready task, never the one worker1 already owns.
+    lease2 = store.claim_next("worker2", lease_ttl=30.0, now=0.1)
+    assert lease2 is not None
+    assert lease2.task_id != lease1.task_id
+
+    # Both tasks are now claimed; a third worker gets nothing.
+    assert store.claim_next("worker3", lease_ttl=30.0, now=0.2) is None
+
+    # Sweeping for expired leases while both are still well within their TTL
+    # must not free either of them up.
+    assert store.reclaim_expired_leases(now=0.3) == 0
+    assert store.claim_next("worker4", lease_ttl=30.0, now=0.4) is None
+    store.close()

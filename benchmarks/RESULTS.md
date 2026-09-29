@@ -113,14 +113,17 @@ throughput at concurrency=8.
   benchmark uncovered: subprocess execution was chosen for language-agnostic
   tasks (any command, not just Python), at a known throughput cost. These
   numbers are what that cost actually is on this machine, for this workload.
-- **Not measured here:** crash-resumability and leaderless claiming are
-  interlock's actual differentiators against Celery (which has neither a
-  DAG concept nor per-task crash recovery — a worker dying mid-task in
-  Celery loses that task's progress with no automatic resume, the closest
-  Celery comparison Ferry itself makes). This benchmark is about raw
-  throughput on a workload both systems can express, not about the
-  correctness properties `test_crash_recovery.py` and `test_claim_race.py`
-  already prove interlock has and Celery does not attempt.
+- **Not measured here — but see `crash_comparison/CRASH_COMPARISON.md`,
+  which is:** this benchmark is about raw throughput on a workload both
+  systems can express. The actual differentiator — crash recovery — is a
+  separate, dedicated demonstration: a real `SIGKILL` mid-task on both
+  systems, correctly configured for redelivery on the Celery side, exec
+  counts observed directly rather than assumed. Short version: both
+  recover automatically (Celery is not "unable to recover"), but interlock
+  re-executes exactly the interrupted step and nothing else, while Celery's
+  redelivery — even correctly configured — re-ran an already-succeeded
+  step and double-fired two others. That's the real gap: duplicate-
+  execution risk for non-idempotent tasks, not "can it recover at all."
 
 ## Reproducing
 

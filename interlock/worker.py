@@ -134,7 +134,11 @@ def main() -> None:
     try:
         while max_cycles is None or cycles < max_cycles:
             did_work = worker.run_one_cycle()
-            cycles += did_work
+            # Counts every loop iteration, not just successful claims — an
+            # empty-poll iteration still counts, so max_cycles reliably
+            # terminates instead of spinning forever once the queue drains
+            # before max_cycles claims have happened.
+            cycles += 1
             if not did_work:
                 time.sleep(worker.poll_interval)
     finally:

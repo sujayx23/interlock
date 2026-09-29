@@ -6,9 +6,9 @@ run, no coordinator process. Every write is fenced by the epoch the worker
 claimed with, so a crashed or reclaimed worker's stale write is provably
 rejected, not just assumed safe.
 
-**Early prototype.** The core correctness properties and both benchmarks
-below are built and tested; the rest — retry backoff, a CLI, a dashboard —
-is not. Don't use this for anything real yet.
+**Early prototype.** The core correctness properties, retry backoff, both
+benchmarks, and a CLI are built and tested; a dashboard/inspector is not.
+Don't use this for anything real yet.
 
 ## Why
 
@@ -53,6 +53,23 @@ python3 -m interlock.worker pipeline.db
 `Workflow.validate()` catches an undefined dependency or a cycle at
 definition time — before it can become a run that silently sits `pending`
 forever.
+
+## CLI
+
+Thin wrappers over the same `Store`/`Worker`/`Workflow` APIs above — no
+logic lives in the CLI beyond argument parsing, module loading, and output
+formatting:
+
+```bash
+interlock submit pipeline.db workflow.py   # imports workflow.py's module-level
+                                            # `workflow`, prints the new run id
+interlock worker pipeline.db               # run forever; any number of these,
+                                            # from any number of machines
+interlock status pipeline.db <run_id>      # table by default, or --json
+```
+
+`workflow.py` just needs a module-level `workflow = Workflow()...` — the
+same builder from the Quick example above.
 
 ## The core mechanism
 
@@ -122,8 +139,6 @@ Two separate writeups, not one number:
 
 ## Not yet built
 
-- Retry backoff beyond immediate re-ready
-- A CLI
 - A dashboard/inspector
 
 ## Task execution model

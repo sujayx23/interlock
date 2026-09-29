@@ -1,14 +1,14 @@
 # interlock
 
-**Leaderless, crash-resumable DAG task execution on SQLite.**
+**Leaderless, crash-resumable DAG task execution on SQLite.** Any worker in
+a pool can claim any ready task from any run — no leader, no single-owner
+run, no coordinator process. Every write is fenced by the epoch the worker
+claimed with, so a crashed or reclaimed worker's stale write is provably
+rejected, not just assumed safe.
 
-Any worker in a pool can claim any ready task from any run — no leader, no
-single-owner run, no coordinator process. Every write is fenced by the epoch
-the worker claimed with, so a crashed or reclaimed worker's stale write is
-provably rejected, not just assumed safe.
-
-**Early prototype.** Two of the highest-risk correctness properties are built
-and tested; the rest is in progress. Don't use this for anything real yet.
+**Early prototype.** The core correctness properties and both benchmarks
+below are built and tested; the rest — retry backoff, a CLI, a dashboard —
+is not. Don't use this for anything real yet.
 
 ## Why
 
@@ -25,6 +25,34 @@ Two existing projects each solve half of this:
 interlock is the combination neither does alone: a crash-resumable DAG whose
 individual tasks — not whole runs — are claimed and executed by any worker in
 a shared pool.
+
+## Quick example
+
+```python
+from interlock.store import Store
+from interlock.workflow import Workflow
+
+wf = (
+    Workflow()
+    .task("fetch", command=["python3", "fetch.py"])
+    .task("transform", command=["python3", "transform.py"], needs=["fetch"])
+    .task("write", command=["python3", "write.py"], needs=["transform"])
+)
+
+store = Store("pipeline.db")
+store.create_run("run-1", wf.tasks())
+```
+
+Then run any number of workers, from any number of processes or machines,
+against the same SQLite file:
+
+```bash
+python3 -m interlock.worker pipeline.db
+```
+
+`Workflow.validate()` catches an undefined dependency or a cycle at
+definition time — before it can become a run that silently sits `pending`
+forever.
 
 ## The core mechanism
 
@@ -50,10 +78,10 @@ correctness mechanism the project is built on.
 
 - **`tests/test_claim_race.py`** — many real OS threads, each with an
   independent SQLite connection, racing to claim from the same ready pool.
-  Asserts no task is ever claimed twice, and every task is eventually
-  claimed by exactly one worker. Includes a direct check that epoch values
-  are strictly increasing across reclaims and that a stale-epoch completion
-  write is rejected.
+  Asserts no task is ever claimed twice, every task is eventually claimed
+  by exactly one worker, and — deterministically, no threads or sleeps —
+  that a second `claim_next()` call can never return a task someone else
+  already owns while its lease is valid.
 - **`tests/test_crash_recovery.py`** — the single most important test in the
   project. Launches a real worker subprocess, waits until it's observably
   `running` a task, sends a genuine `SIGKILL` (not a graceful shutdown), then
@@ -63,27 +91,48 @@ correctness mechanism the project is built on.
 - **`tests/test_heartbeat.py`** — a second worker actively tries to steal a
   still-running task every 50ms for its full duration. Proves a task that
   legitimately runs longer than its lease TTL is never wrongly reclaimed
-  while its owner is alive and heartbeating. (This test caught a real bug
-  during development — a heartbeat thread sharing its parent's SQLite
-  connection across threads, which silently failed every call. Fixed by
-  giving the heartbeat thread its own connection.)
+  while its owner is alive and heartbeating.
+- **`tests/test_workflow.py`** — the `Workflow`/`Task` builder: dangling
+  dependency and cycle detection (including a diamond dependency, which a
+  naive "seen this node before" check would wrongly flag as a cycle), plus
+  an end-to-end run through `Store`/`Worker`.
+
+17 tests, stable across repeated full-suite runs.
+
+## Benchmarked against Celery+Redis, honestly
+
+Two separate writeups, not one number:
+
+- **[`benchmarks/RESULTS.md`](benchmarks/RESULTS.md)** — raw throughput.
+  Celery is **~5-6x faster** on a trivial-task workload, warm. That gap is
+  the real, measured cost of interlock's subprocess-per-task execution
+  model (language-agnostic) against Celery's in-process Python calls — not
+  hidden, not rounded up. Includes a real environment finding along the
+  way: Celery's default `prefork` pool doesn't work under Python 3.14 here,
+  documented rather than worked around silently.
+- **[`benchmarks/crash_comparison/CRASH_COMPARISON.md`](benchmarks/crash_comparison/CRASH_COMPARISON.md)**
+  — the actual differentiator. A real worker `SIGKILL` mid-task on both
+  systems, Celery configured realistically for redelivery (not left on
+  defaults, which don't retry at all). Both recover automatically — but
+  interlock re-executes exactly the interrupted step, while Celery's
+  redelivery, even correctly configured, re-ran an already-succeeded step
+  and double-fired two others. Traced against Kombu's actual source, not
+  assumed. The real gap over Celery isn't "can it recover" — it's
+  duplicate-execution risk on non-idempotent tasks.
 
 ## Not yet built
 
-- A proper `Workflow`/`Task` definition API (DAGs are currently built from
-  raw dicts passed to `Store.create_run`)
 - Retry backoff beyond immediate re-ready
-- A benchmark against a real baseline (Celery+Redis or Airflow's local
-  executor), reported honestly including where this loses
-- CLI, dashboard/inspector
+- A CLI
+- A dashboard/inspector
 
 ## Task execution model
 
 Subprocess-based, language-agnostic: a worker spawns the task's declared
 `command`, writes upstream dependencies' outputs (JSON) to stdin, reads the
 result from stdout. Exit 0 = success. This has real overhead (process spawn
-per task) compared to in-process execution — a deliberate tradeoff to be
-measured honestly in the benchmark, not hidden.
+per task) compared to in-process execution — measured, not hidden, in
+`benchmarks/RESULTS.md`.
 
 ## Development
 

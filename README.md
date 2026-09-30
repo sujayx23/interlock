@@ -129,9 +129,17 @@ correctness mechanism the project is built on.
   property, in both directions: a case-insensitive `localhost`/`127.0.0.1`
   Host header is accepted, a spoofed or mismatched one is rejected with
   403. Plus smoke tests of the read-only run/task views against a live
-  server.
+  server, and two tests against `/runs/<run_id>`'s `<script>`-block
+  encoding: the router's `[^/]+` path pattern structurally excludes a
+  `/`-containing payload (verified with a real request, not just read
+  off the regex), and a slash-free HTML/JS payload is still escaped by
+  `_json_for_script()`'s `<` encoding rather than reflected raw.
+- **`tests/test_cli.py`** — `Store.run_status()` on a nonexistent run
+  returns `None` rather than raising, and both `interlock status` and
+  `interlock submit --run-id <duplicate>` surface a clean one-line error
+  instead of a raw traceback.
 
-27 tests, stable across repeated full-suite runs.
+32 tests, stable across repeated full-suite runs.
 
 ## Benchmarked against Celery+Redis, honestly
 

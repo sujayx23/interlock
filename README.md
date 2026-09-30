@@ -184,6 +184,12 @@ pip install -e ".[dev]"
 pytest
 ```
 
+Schema changes (like the recent `idempotency_key` removal) aren't migrated —
+`CREATE TABLE IF NOT EXISTS` is a no-op against a table that already exists,
+so a `.db` file created before a schema change will fail on new inserts
+against it. Consistent with the project's early-prototype status: just
+delete the stale `.db` and recreate it with `interlock submit`.
+
 ## License
 
 MIT

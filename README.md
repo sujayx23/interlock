@@ -7,8 +7,8 @@ claimed with, so a crashed or reclaimed worker's stale write is provably
 rejected, not just assumed safe.
 
 **Early prototype.** The core correctness properties, retry backoff, both
-benchmarks, and a CLI are built and tested; a dashboard/inspector is not.
-Don't use this for anything real yet.
+benchmarks, a CLI, and a read-only inspector are built and tested. Nothing
+left on the original roadmap. Don't use this for anything real yet.
 
 ## Why
 
@@ -66,10 +66,16 @@ interlock submit pipeline.db workflow.py   # imports workflow.py's module-level
 interlock worker pipeline.db               # run forever; any number of these,
                                             # from any number of machines
 interlock status pipeline.db <run_id>      # table by default, or --json
+interlock inspect pipeline.db              # read-only web inspector,
+                                            # http://127.0.0.1:8765 by default
 ```
 
 `workflow.py` just needs a module-level `workflow = Workflow()...` — the
 same builder from the Quick example above.
+
+`interlock inspect` is loopback-only and validates the `Host`/`Origin`
+header on every request, by deliberate design — not an incidental
+implementation detail.
 
 ## The core mechanism
 
@@ -113,8 +119,13 @@ correctness mechanism the project is built on.
   dependency and cycle detection (including a diamond dependency, which a
   naive "seen this node before" check would wrongly flag as a cycle), plus
   an end-to-end run through `Store`/`Worker`.
+- **`tests/test_inspector.py`** — the inspector's one real security
+  property, in both directions: a case-insensitive `localhost`/`127.0.0.1`
+  Host header is accepted, a spoofed or mismatched one is rejected with
+  403. Plus smoke tests of the read-only run/task views against a live
+  server.
 
-17 tests, stable across repeated full-suite runs.
+25 tests, stable across repeated full-suite runs.
 
 ## Benchmarked against Celery+Redis, honestly
 
@@ -136,10 +147,6 @@ Two separate writeups, not one number:
   and double-fired two others. Traced against Kombu's actual source, not
   assumed. The real gap over Celery isn't "can it recover" — it's
   duplicate-execution risk on non-idempotent tasks.
-
-## Not yet built
-
-- A dashboard/inspector
 
 ## Task execution model
 

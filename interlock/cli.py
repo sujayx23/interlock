@@ -139,6 +139,15 @@ def _cmd_status(args: argparse.Namespace) -> None:
         print(line)
 
 
+def _cmd_inspect(args: argparse.Namespace) -> None:
+    from interlock.inspector import serve
+
+    try:
+        serve(args.db, port=args.port)
+    except KeyboardInterrupt:
+        pass
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="interlock")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -162,6 +171,11 @@ def main() -> None:
     p_status.add_argument("run_id", help="run id, as printed by `interlock submit`")
     p_status.add_argument("--json", action="store_true", help="print machine-readable JSON instead of a table")
     p_status.set_defaults(func=_cmd_status)
+
+    p_inspect = sub.add_parser("inspect", help="run a read-only local web inspector")
+    p_inspect.add_argument("db", help="path to the SQLite database file")
+    p_inspect.add_argument("--port", type=int, default=8765, help="port to listen on (127.0.0.1 only)")
+    p_inspect.set_defaults(func=_cmd_inspect)
 
     args = parser.parse_args()
     args.func(args)

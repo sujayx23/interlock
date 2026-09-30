@@ -339,6 +339,11 @@ class Store:
         row = self._conn.execute("SELECT status FROM runs WHERE id=?", (run_id,)).fetchone()
         return row["status"]
 
+    def list_runs(self) -> list[dict]:
+        return [dict(r) for r in self._conn.execute(
+            "SELECT id, status, created_at, finished_at FROM runs ORDER BY created_at DESC"
+        ).fetchall()]
+
     def new_worker_id(self) -> str:
         return uuid.uuid4().hex
 

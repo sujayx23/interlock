@@ -7,8 +7,8 @@ claimed with, so a crashed or reclaimed worker's stale write is provably
 rejected, not just assumed safe.
 
 **Early prototype.** The core correctness properties, retry backoff, both
-benchmarks, a CLI, and a local read-only inspector are all built and
-tested. Don't use this for anything real yet.
+benchmarks, a CLI, and a read-only inspector are built and tested. Nothing
+left on the original roadmap. Don't use this for anything real yet.
 
 ## Why
 
@@ -66,14 +66,16 @@ interlock submit pipeline.db workflow.py   # imports workflow.py's module-level
 interlock worker pipeline.db               # run forever; any number of these,
                                             # from any number of machines
 interlock status pipeline.db <run_id>      # table by default, or --json
-interlock inspect pipeline.db              # read-only web UI at 127.0.0.1:8765
+interlock inspect pipeline.db              # read-only web inspector,
+                                            # http://127.0.0.1:8765 by default
 ```
 
 `workflow.py` just needs a module-level `workflow = Workflow()...` — the
 same builder from the Quick example above. `inspect` is loopback-only and
-checks the Host/Origin headers on every request against `127.0.0.1`/
-`localhost` — a local dev tool that accidentally becomes network-reachable
-is a real failure mode, not a hypothetical one.
+validates the `Host`/`Origin` header on every request against
+`127.0.0.1`/`localhost`, by deliberate design — a local dev tool that
+accidentally becomes network-reachable is a real failure mode, not a
+hypothetical one.
 
 ## The core mechanism
 
@@ -123,10 +125,11 @@ correctness mechanism the project is built on.
   won't return a task before its backoff `not_before` time (a fake-clock
   test, no real sleeping); a downstream task is correctly `blocked`, not
   silently `ready`, when its dependency goes `dead`.
-- **`tests/test_inspector.py`** — the inspector's Host/Origin allowlist
-  checked in both directions: a matching `localhost`/`127.0.0.1` Host is
-  accepted case-insensitively, and a spoofed/mismatched Host is rejected
-  with 403, not just inspected by reading the code.
+- **`tests/test_inspector.py`** — the inspector's one real security
+  property, in both directions: a case-insensitive `localhost`/`127.0.0.1`
+  Host header is accepted, a spoofed or mismatched one is rejected with
+  403. Plus smoke tests of the read-only run/task views against a live
+  server.
 
 27 tests, stable across repeated full-suite runs.
 

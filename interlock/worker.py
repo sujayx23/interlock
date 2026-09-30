@@ -94,7 +94,13 @@ class Worker:
         except subprocess.TimeoutExpired:
             stop_heartbeat.set()
             hb_thread.join()
-            self.store.fail(lease, "task timed out")
+            if alive.is_set():
+                # Same invariant as the non-timeout path below: don't write
+                # if the lease was already lost mid-execution. fail()'s
+                # epoch fence would reject a stale write anyway, but
+                # checking here too keeps this path consistent with the
+                # rest of _execute() instead of relying on the fence alone.
+                self.store.fail(lease, "task timed out")
             return
         stop_heartbeat.set()
         hb_thread.join()

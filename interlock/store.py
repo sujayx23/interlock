@@ -335,9 +335,9 @@ class Store:
             "SELECT * FROM tasks WHERE run_id=? ORDER BY name", (run_id,)
         ).fetchall()]
 
-    def run_status(self, run_id: str) -> str:
+    def run_status(self, run_id: str) -> str | None:
         row = self._conn.execute("SELECT status FROM runs WHERE id=?", (run_id,)).fetchone()
-        return row["status"]
+        return row["status"] if row else None
 
     def list_runs(self) -> list[dict]:
         return [dict(r) for r in self._conn.execute(

@@ -109,3 +109,37 @@ def test_run_detail_api_404s_for_a_nonexistent_run(inspector_server):
     port = inspector_server
     status, _ = _get(port, "/api/runs/no-such-run", host=f"127.0.0.1:{port}")
     assert status == 404
+
+
+def test_run_page_never_reflects_a_slash_into_run_id(inspector_server):
+    """The router (`_RUN_PATH = r"^/runs/([^/]+)$"`) structurally forbids a
+    `/` character anywhere in the captured run_id, which — since nothing
+    ever URL-decodes the path — means a raw request containing a literal
+    `/` in that position can never match /runs/<id> at all, regardless of
+    what's inside it. Verified directly here (empirically, not just by
+    reading the regex) rather than assumed: a would-be
+    </script>-tag-injection payload, which inherently needs a `/`, 404s
+    instead of reaching the template renderer."""
+    port = inspector_server
+    payload = "/runs/evil</script><script>alert(1)</script>"
+    status, body = _get(port, payload, host=f"127.0.0.1:{port}")
+    assert status == 404
+    assert b"</script><script>alert(1)</script>" not in body
+
+
+def test_run_page_json_for_script_escapes_a_slash_free_html_payload(inspector_server):
+    """Defense in depth for _json_for_script(), independent of whether the
+    router currently allows a payload through: a run_id with HTML-special
+    characters but no `/` (so it *does* reach _render_run_page) must not
+    appear as live, unescaped markup in the page — specifically not inside
+    the inline <script> block, where html.escape() alone wouldn't help
+    since browsers don't HTML-decode script body content."""
+    port = inspector_server
+    # No space (http.client itself rejects raw spaces in a URL) and no '/'
+    # (that's the other test's concern) — just enough to prove a raw '<' in
+    # run_id never survives unescaped into the <script> block.
+    payload = "/runs/evil<xss>marker"
+    status, body = _get(port, payload, host=f"127.0.0.1:{port}")
+    assert status == 200
+    assert b"<xss>marker" not in body
+    assert b"\\u003cxss>marker" in body  # from _json_for_script

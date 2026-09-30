@@ -41,16 +41,6 @@ def _allowed_hosts(port: int) -> set[str]:
     return {f"127.0.0.1:{port}", f"localhost:{port}"}
 
 
-def _run_status_or_none(store: Store, run_id: str) -> str | None:
-    try:
-        return store.run_status(run_id)
-    except TypeError:
-        # Store.run_status() assumes the run exists (it indexes a None row
-        # otherwise); translated into "not found" here rather than changed
-        # in Store, which is out of scope for this read-only view layer.
-        return None
-
-
 def _render_index(runs: list[dict]) -> str:
     rows = "\n".join(
         f'<tr><td><a href="/runs/{html.escape(r["id"], quote=True)}">{html.escape(r["id"])}</a></td>'
@@ -68,6 +58,20 @@ def _render_index(runs: list[dict]) -> str:
 </body></html>"""
 
 
+def _json_for_script(value) -> str:
+    """json.dumps() embedded directly inside a <script> block is vulnerable
+    to a </script> tag-injection breakout if the encoded value ever
+    contains that literal substring — the HTML tokenizer closes the script
+    element on sight of it, before the browser's JS parser ever sees it as
+    "just a string". run_id here comes straight from the request path with
+    no validation, so this isn't hypothetical: a request for
+    `/runs/x</script><script>alert(1)</script>` would otherwise inject a
+    live script tag. Escaping '<' as its JSON unicode escape defeats this
+    regardless of where in the string it appears, without changing the
+    decoded value at all."""
+    return json.dumps(value).replace("<", "\\u003c")
+
+
 def _render_run_page(run_id: str) -> str:
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>interlock: {html.escape(run_id)}</title><style>{_STYLE}</style></head>
@@ -80,7 +84,7 @@ def _render_run_page(run_id: str) -> str:
 <tbody id="tasks"></tbody>
 </table>
 <script>
-const RUN_ID = {json.dumps(run_id)};
+const RUN_ID = {_json_for_script(run_id)};
 document.getElementById("run-id").textContent = RUN_ID;
 async function refresh() {{
   const res = await fetch("/api/runs/" + encodeURIComponent(RUN_ID));
@@ -161,7 +165,7 @@ class InspectorHandler(BaseHTTPRequestHandler):
         m = _API_RUN_PATH.match(self.path)
         if m:
             run_id = m.group(1)
-            status = _run_status_or_none(self.store, run_id)
+            status = self.store.run_status(run_id)
             if status is None:
                 self._send_json(404, {"error": f"no such run: {run_id}"})
                 return

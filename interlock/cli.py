@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import sqlite3
 import sys
 import time
 import uuid
@@ -78,7 +79,11 @@ def _cmd_submit(args: argparse.Namespace) -> None:
     run_id = args.run_id or uuid.uuid4().hex
     store = Store(args.db)
     try:
-        store.create_run(run_id, tasks)
+        try:
+            store.create_run(run_id, tasks)
+        except sqlite3.IntegrityError:
+            print(f"error: run {run_id!r} already exists", file=sys.stderr)
+            raise SystemExit(1)
     finally:
         store.close()
     print(run_id)
@@ -109,14 +114,8 @@ def _cmd_worker(args: argparse.Namespace) -> None:
 def _cmd_status(args: argparse.Namespace) -> None:
     store = Store(args.db)
     try:
-        try:
-            run_status = store.run_status(args.run_id)
-        except TypeError:
-            # Store.run_status() assumes the run exists; a nonexistent run_id
-            # raises TypeError on `row["status"]` against a None row rather
-            # than returning None. Translated into a clean CLI error here
-            # rather than changed in Store, which is out of scope for a
-            # wrapper-only change.
+        run_status = store.run_status(args.run_id)
+        if run_status is None:
             print(f"error: no such run: {args.run_id}", file=sys.stderr)
             raise SystemExit(1)
         tasks = store.tasks_for_run(args.run_id)

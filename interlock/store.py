@@ -34,6 +34,10 @@ CREATE TABLE IF NOT EXISTS runs (
     finished_at REAL
 );
 
+-- No idempotency-key column: this schema used to carry one, generated per
+-- task but never read or enforced anywhere. The epoch fence in complete()/
+-- fail() is the only dedup guarantee this project actually makes; a second
+-- unread column implying a separate one was dropped rather than kept.
 CREATE TABLE IF NOT EXISTS tasks (
     id                TEXT PRIMARY KEY,
     run_id            TEXT NOT NULL REFERENCES runs(id),
@@ -44,7 +48,6 @@ CREATE TABLE IF NOT EXISTS tasks (
     epoch             INTEGER NOT NULL DEFAULT 0,
     worker_id         TEXT,
     lease_expires_at  REAL,
-    idempotency_key   TEXT NOT NULL,
     attempts          INTEGER NOT NULL DEFAULT 0,
     max_retries       INTEGER NOT NULL DEFAULT 3,
     not_before        REAL,                          -- ready tasks aren't claimable until this time (backoff)
@@ -127,12 +130,12 @@ class Store:
                 self._conn.execute(
                     """INSERT INTO tasks
                        (id, run_id, name, command, needs, status,
-                        idempotency_key, max_retries, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        max_retries, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         task_id, run_id, t["name"], json.dumps(t["command"]),
                         json.dumps(needs_ids), status,
-                        f"{task_id}:complete", t.get("max_retries", 3), now,
+                        t.get("max_retries", 3), now,
                     ),
                 )
 

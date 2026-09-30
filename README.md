@@ -129,19 +129,21 @@ correctness mechanism the project is built on.
   property, in both directions: a case-insensitive `localhost`/`127.0.0.1`
   Host header is accepted, a spoofed or mismatched one is rejected with
   403. Plus smoke tests of the read-only run/task views against a live
-  server, and a check that the router's own path-segment constraint keeps
-  a raw `/` out of `run_id` regardless of request shape.
+  server, and two tests against `/runs/<run_id>`'s `<script>`-block
+  encoding: the router's `[^/]+` path pattern structurally excludes a
+  `/`-containing payload (verified with a real request, not just read
+  off the regex), and a slash-free HTML/JS payload is still escaped by
+  `_json_for_script()`'s `<` encoding rather than reflected raw.
 - **`tests/test_worker_cycles.py`** — a regression test for a real bug: the
   worker loop's `max_cycles` used to count only successful claims, so it
   never terminated once the task queue drained before reaching the target
   count. Runs the real loop on a background thread with a bounded
   `join(timeout=...)`, so a regression fails fast on an assertion instead
   of hanging the suite.
-- **`tests/test_cli.py`** — two more real bugs caught the same way: `Store.
-  run_status()` used to raise `TypeError` instead of returning `None` for
-  a nonexistent run, and `interlock submit` with a duplicate `--run-id`
-  crashed with a raw `sqlite3.IntegrityError` traceback. Both now give a
-  clean, tested error path instead.
+- **`tests/test_cli.py`** — `Store.run_status()` on a nonexistent run
+  returns `None` rather than raising, and both `interlock status` and
+  `interlock submit --run-id <duplicate>` surface a clean one-line error
+  instead of a raw traceback.
 
 32 tests, stable across repeated full-suite runs.
 

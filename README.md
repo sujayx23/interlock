@@ -7,8 +7,8 @@ claimed with, so a crashed or reclaimed worker's stale write is provably
 rejected, not just assumed safe.
 
 **Early prototype.** The core correctness properties, retry backoff, both
-benchmarks, and a CLI are built and tested; a dashboard/inspector is not.
-Don't use this for anything real yet.
+benchmarks, a CLI, and a local read-only inspector are all built and
+tested. Don't use this for anything real yet.
 
 ## Why
 
@@ -66,10 +66,14 @@ interlock submit pipeline.db workflow.py   # imports workflow.py's module-level
 interlock worker pipeline.db               # run forever; any number of these,
                                             # from any number of machines
 interlock status pipeline.db <run_id>      # table by default, or --json
+interlock inspect pipeline.db              # read-only web UI at 127.0.0.1:8765
 ```
 
 `workflow.py` just needs a module-level `workflow = Workflow()...` — the
-same builder from the Quick example above.
+same builder from the Quick example above. `inspect` is loopback-only and
+checks the Host/Origin headers on every request against `127.0.0.1`/
+`localhost` — a local dev tool that accidentally becomes network-reachable
+is a real failure mode, not a hypothetical one.
 
 ## The core mechanism
 
@@ -113,8 +117,18 @@ correctness mechanism the project is built on.
   dependency and cycle detection (including a diamond dependency, which a
   naive "seen this node before" check would wrongly flag as a cycle), plus
   an end-to-end run through `Store`/`Worker`.
+- **`tests/test_retry_backoff.py`** — a task that fails then succeeds within
+  `max_retries` still completes; one that exhausts `max_retries` becomes
+  terminal `dead` rather than retrying forever; `claim_next()` genuinely
+  won't return a task before its backoff `not_before` time (a fake-clock
+  test, no real sleeping); a downstream task is correctly `blocked`, not
+  silently `ready`, when its dependency goes `dead`.
+- **`tests/test_inspector.py`** — the inspector's Host/Origin allowlist
+  checked in both directions: a matching `localhost`/`127.0.0.1` Host is
+  accepted case-insensitively, and a spoofed/mismatched Host is rejected
+  with 403, not just inspected by reading the code.
 
-17 tests, stable across repeated full-suite runs.
+27 tests, stable across repeated full-suite runs.
 
 ## Benchmarked against Celery+Redis, honestly
 
@@ -136,10 +150,6 @@ Two separate writeups, not one number:
   and double-fired two others. Traced against Kombu's actual source, not
   assumed. The real gap over Celery isn't "can it recover" — it's
   duplicate-execution risk on non-idempotent tasks.
-
-## Not yet built
-
-- A dashboard/inspector
 
 ## Task execution model
 
